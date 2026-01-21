@@ -7,19 +7,23 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QKeyEvent
-import pywikibot
 import requests
 import logging
+import urllib.parse
+import json
+import random
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+headers = {'User-Agent': 'fullscreen4wikicommons/1.0 (https://github.com/trolleway/fullscreen4wikicommons; trolleway@yandex.ru)'}
 
 class ImageLoaderWorker(QObject):
     """Worker thread for loading images from category"""
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
+    headers = {'User-Agent': 'fullscreen4wikicommons/1.0 (https://github.com/trolleway/fullscreen4wikicommons; trolleway@yandex.ru)'}
     
     def __init__(self, category_name: str):
         super().__init__()
@@ -35,39 +39,72 @@ class ImageLoaderWorker(QObject):
                 
             self.progress.emit(f"Initializing Wikimedia Commons connection...")
             
-            # Initialize pywikibot
-            site = pywikibot.Site('commons', 'commons')
-            
             if not self._is_running:
                 return
                 
             self.progress.emit(f"Loading category: {self.category_name}...")
-            category = pywikibot.Category(site, f"Category:{self.category_name}")
             
-            # Check if category exists
-            if not category.exists():
+            # Check if category exists using MediaWiki API
+            api_url = "https://commons.wikimedia.org/w/api.php"
+            
+            # First, get category info
+            params = {
+                "action": "query",
+                "titles": f"Category:{self.category_name}",
+                "format": "json"
+            }
+            
+            response = requests.get(api_url, params=params, timeout=30, headers=self.headers)
+            data = response.json()
+            
+            pages = data.get("query", {}).get("pages", {})
+            page_id = list(pages.keys())[0] if pages else None
+            
+            if page_id == "-1" or not page_id:
                 self.error.emit(f"Category '{self.category_name}' does not exist")
                 return
             
-            # Get image files from category
+            # Get image files from category using generator
             image_files = []
-            total_processed = 0
-            file_generator = category.members(member_type=['file'], namespaces=6, recurse=1)  # Namespace 6 = File namespace
+            continue_params = {}
             
-            for page in file_generator: 
-                if not self._is_running:
-                    return
-                    
-                if page.exists() and not page.isRedirectPage():
-                    # Check if it's an image file
-                    title = page.title(with_ns=False)
-                    if title.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', 
-                                              '.svg', '.webp', '.tiff', '.tif')):
-                        image_files.append(title)
+            while self._is_running:
+                params = {
+                    "action": "query",
+                    "list": "categorymembers",
+                    "cmtitle": f"Category:{self.category_name}",
+                    "cmtype": "file",
+                    "cmnamespace": 6,  # File namespace
+                    "cmlimit": 500,  # Max per request
+                    "format": "json",
+                    **continue_params
+                }
                 
-                total_processed += 1
-                if total_processed % 20 == 0:
+                response = requests.get(api_url, params=params, timeout=30, headers=self.headers)
+                data = response.json()
+                
+                # Extract image files
+                members = data.get("query", {}).get("categorymembers", [])
+                for member in members:
+                    if not self._is_running:
+                        return
+                    
+                    title = member.get("title", "")
+                    if title.startswith("File:"):
+                        image_name = title[5:]  # Remove "File:" prefix
+                        
+                        # Check if it's an image file by extension
+                        if image_name.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', 
+                                                      '.svg', '.webp', '.tiff', '.tif', 
+                                                      '.bmp', '.ico')):
+                            image_files.append(image_name)
+                
+                # Check for continuation
+                if "continue" in data:
+                    continue_params = data["continue"]
                     self.progress.emit(f"Found {len(image_files)} images so far...")
+                else:
+                    break
             
             if not self._is_running:
                 return
@@ -76,11 +113,18 @@ class ImageLoaderWorker(QObject):
                 self.error.emit(f"No images found in category: {self.category_name}")
                 return
             
+            # Remove duplicates and sort
+            image_files = sorted(list(set(image_files)))
+            
             self.progress.emit(f"Successfully loaded {len(image_files)} images")
             self.finished.emit(image_files)
             
+        except requests.exceptions.RequestException as e:
+            if self._is_running:
+                logger.error(f"Network error in worker thread: {e}")
+                self.error.emit(f"Network error: {str(e)}")
         except Exception as e:
-            if self._is_running:  # Only emit error if we're still running
+            if self._is_running:
                 logger.error(f"Error in worker thread: {e}")
                 self.error.emit(f"Error loading category: {str(e)}")
     
@@ -88,7 +132,164 @@ class ImageLoaderWorker(QObject):
         """Stop the worker"""
         self._is_running = False
 
+
+
+
 class WikimediaImageViewer(QMainWindow):
+    headers = {'User-Agent': 'fullscreen4wikicommons/1.0 (https://github.com/trolleway/fullscreen4wikicommons; trolleway@yandex.ru)'} 
+        
+    def get_image_info(self,image_name: str,width:int):
+        """Get information about an image file"""
+        api_url = "https://commons.wikimedia.org/w/api.php"
+        
+        params = {
+            "action": "query",
+            "titles": f"File:{image_name}",
+            "prop": "imageinfo",
+            "iiprop": "url|size|mime|extmetadata",
+            "iiurlwidth": width,
+            "format": "json"
+        }
+        
+        try:
+            response = requests.get(api_url, params=params, timeout=30, headers=self.headers)
+            data = response.json()
+            
+            pages = data.get("query", {}).get("pages", {})
+            if not pages:
+                return None
+            
+            page_id = list(pages.keys())[0]
+            if page_id == "-1":
+                return None
+            
+            page_info = pages[page_id]
+            imageinfo = page_info.get("imageinfo", [{}])[0] if page_info.get("imageinfo") else {}
+            
+            return {
+                "url": imageinfo.get("url", ""),
+                "thumburl": imageinfo.get("thumburl", imageinfo.get("url", "")),
+                "descriptionurl": imageinfo.get("descriptionurl", ""),
+                "extmetadata": imageinfo.get("extmetadata", {}),
+                "mime": imageinfo.get("mime", ""),
+                "size": imageinfo.get("size", 0)
+            }
+        except Exception as e:
+            logger.error(f"Error getting image info: {e}")
+            return None
+    
+    
+    def get_structured_data(self, image_name: str):
+        """Get structured data for an image (licenses, authors, etc.)"""
+        # First get the file page content to find the structured data ID
+        api_url = "https://commons.wikimedia.org/w/api.php"
+        
+        params = {
+            "action": "query",
+            "titles": f"File:{image_name}",
+            "prop": "info",
+            "inprop": "url",
+            "format": "json"
+        }
+        
+        try:
+            response = requests.get(api_url, params=params, timeout=30, headers=self.headers)
+            data = response.json()
+            
+            pages = data.get("query", {}).get("pages", {})
+            if not pages:
+                return {}
+            
+            page_id = list(pages.keys())[0]
+            if page_id == "-1":
+                return {}
+            
+            # Now try to get structured data via the Entity API
+            entity_url = "https://www.wikidata.org/w/api.php"
+            entity_params = {
+                "action": "wbgetentities",
+                "sites": "commonswiki",
+                "titles": f"File:{image_name}",
+                "props": "claims",
+                "format": "json"
+            }
+            
+            entity_response = requests.get(entity_url, params=entity_params, timeout=30, headers=self.headers)
+            entity_data = entity_response.json()
+            
+            entities = entity_data.get("entities", {})
+            if not entities:
+                return {}
+            
+            entity_id = list(entities.keys())[0]
+            if entity_id == "-1":
+                return {}
+            
+            entity = entities[entity_id]
+            claims = entity.get("claims", {})
+            
+            # Extract license and author information
+            license_name = "Unknown license"
+            author_name = ""
+            
+            # Get license (P275)
+            if "P275" in claims:
+                for claim in claims["P275"]:
+                    if "mainsnak" in claim and "datavalue" in claim["mainsnak"]:
+                        license_qid = claim["mainsnak"]["datavalue"]["value"]["id"]
+                        # Get license label
+                        license_params = {
+                            "action": "wbgetentities",
+                            "ids": license_qid,
+                            "props": "labels",
+                            "languages": "en",
+                            "format": "json"
+                        }
+                        license_response = requests.get(entity_url, params=license_params, timeout=3, headers=self.headers)
+                        license_data = license_response.json()
+                        
+                        license_entity = license_data.get("entities", {}).get(license_qid, {})
+                        license_label = license_entity.get("labels", {}).get("en", {}).get("value", license_qid)
+                        license_name = license_label
+            
+            # Get author (P170)
+            if "P170" in claims:
+                for claim in claims["P170"]:
+                    if "mainsnak" in claim and "datavalue" in claim["mainsnak"]:
+                        # Check if there are qualifiers for author name
+                        if "qualifiers" in claim and "P2093" in claim["qualifiers"]:
+                            author_qualifiers = claim["qualifiers"]["P2093"]
+                            if author_qualifiers:
+                                author_name = author_qualifiers[0].get("datavalue", {}).get("value", "")
+                        else:
+                            # Try to get the author name from the entity
+                            author_qid = claim["mainsnak"]["datavalue"]["value"]["id"]
+                            author_params = {
+                                "action": "wbgetentities",
+                                "ids": author_qid,
+                                "props": "labels",
+                                "languages": "en",
+                                "format": "json"
+                            }
+                            author_response = requests.get(entity_url, params=author_params, timeout=30, headers=self.headers)
+                            author_data = author_response.json()
+                            
+                            author_entity = author_data.get("entities", {}).get(author_qid, {})
+                            author_label = author_entity.get("labels", {}).get("en", {}).get("value", author_qid)
+                            if not author_name:
+                                author_name = author_label
+            
+            return {
+                "license": license_name,
+                "author": author_name
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting structured data: {e}")
+            return {}
+
+
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Wikimedia Commons Image Viewer")
@@ -123,8 +324,14 @@ class WikimediaImageViewer(QMainWindow):
         self.category_label = QLabel("Category:")
         controls_layout.addWidget(self.category_label)
         
+        sample_categories = ['DeLorean DMC-12 in the UMMC Museum',
+                             'Photographs by Artem Svetlov/2023-01 KodakVision3 250D',
+                             'Kamakurakōkōmae Crossing No.1',
+                             ]
+        randomcategory = random.choice(sample_categories)
+        
         self.category_input = QLineEdit()
-        self.category_input.setPlaceholderText("Enter Wikimedia Commons category name (e.g., 'Featured pictures')")
+        self.category_input.setPlaceholderText(f"Enter Wikimedia Commons category name (e.g., '{randomcategory}')")
         self.category_input.returnPressed.connect(self.load_category)
         controls_layout.addWidget(self.category_input)
         
@@ -161,7 +368,7 @@ class WikimediaImageViewer(QMainWindow):
                     <div style="text-align: center;">
                         <h2>Wikimedia Commons Image Viewer</h2>
                         <p>Enter a category name to start viewing images</p>
-                        <p>Examples: 'Featured pictures', 'Quality images', 'Wikipedia Featured pictures'</p>
+                        <p>Example: """+randomcategory+"""</p>
                     </div>
                 </body>
             </html>
@@ -352,47 +559,24 @@ class WikimediaImageViewer(QMainWindow):
             self.status_bar.showMessage(f"Loading image: {image_name}...")
             QApplication.processEvents()  # Keep UI responsive
             
-            # Get file page and image URL
-            site = pywikibot.Site('commons', 'commons')
-            file_page = pywikibot.FilePage(site, f"File:{image_name}")
-            
+            # Get viewport width for responsive image
             width = self.web_view.width()
-            # Get image URL (use thumbnail for faster loading)
-            try:
-                image_url = file_page.get_file_url(url_width=width)
-            except:
-                # Fallback to default URL
-                image_url = file_page.get_file_url()
-            image_page_url = file_page.full_url()
             
-            # get captions
-            #file_page.data_item().claims['P275'][0].getTarget()
-            sdc_data = file_page.data_item()
-            claims = sdc_data.claims
-            license_name = 'license_name'
-            author_name = ''
-
-            if  'P275' in claims:
-                for statement in claims['P275']:
-
-                    # 3. Create an ItemPage to retrieve the label
-                    license_item = statement.getTarget()
-                    
-                    # Get the label in a specific language (e.g., 'en')
-                    license_name = license_item.get()['labels'].get('en', 'license_name')
-                    
-                    print(f"Retrieved License: {license_name} ")
-            claims = sdc_data.get().get('statements', {})
-            if 'P170' in claims:
-                for claim in claims['P170']:
-                    authorjson = claim.toJSON()
-                    
-                    author_name = authorjson['qualifiers'].get('P2093',{})[0]['datavalue']['value']
-                    
-
-                    print(f"Author: {author_name}")
+            # Get image info from API
+            image_info = self.get_image_info(image_name,width=width)
             
+            if not image_info:
+                raise Exception(f"Could not retrieve info for image: {image_name}")
             
+            image_url = image_info.get("thumburl", "")
+            image_page_url = image_info.get("descriptionurl", "")
+            
+            # Get structured data (license and author)
+            structured_data = self.get_structured_data(image_name)
+            license_name = structured_data.get("license", "Unknown license")
+            author_name = structured_data.get("author", "")
+            
+
             
             # Create HTML to display image
             html_content = f"""
@@ -565,6 +749,34 @@ align-self: center;
 @view-transition {{
   navigation: auto;
 }}
+
+/* Additional styles for image display */
+.image-container {{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+}}
+
+.image-container img {{
+    max-width: 100%;
+    max-height: 85vh;
+    object-fit: contain;
+    transition: opacity 0.3s;
+}}
+
+.image-info {{
+    margin-top: 20px;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    border-radius: 5px;
+    text-align: center;
+    max-width: 80%;
+}}
                     </style>
                 </head>
                 <body>
@@ -574,7 +786,7 @@ align-self: center;
 <figure class="stack__element">
 
 	<picture><source srcset="{image_url}"  media="(min-aspect-ratio: 1/1)" type="image/webp">
-<img class="stack__element" src="{image_url}" alt="{image_name}"></picture>
+<img class="stack__element" src="{image_url}" alt="{image_name}" style="width: {width}px; max-width: 100%;"></picture>
 
 
   <figcaption class="caption">
@@ -608,13 +820,16 @@ align-self: center;
                 
                 
                     <h4>non-clipped image</h4>
+                    {image_url}
                     <div class="image-container">
                         <img src="{image_url}" alt="{image_name}"
                              onload="this.style.opacity='1';"
                              style="opacity: 0; transition: opacity 0.3s;">
                         <div class="image-info">
                             <strong>{image_name}</strong><br>
-                            <small>Image {self.current_index + 1} of {len(self.image_files)} | Use ← → keys to navigate</small>
+                            <small>Image {self.current_index + 1} of {len(self.image_files)} | Use ← → keys to navigate</small><br>
+                            <small>License: {license_name}</small><br>
+                            <small>Author: {author_name}</small>
                         </div>
                     </div>
                 </body>
@@ -622,9 +837,6 @@ align-self: center;
             """
             
             self.web_view.setHtml(html_content)
-            
-            # Update info label
-
             
             # Update counter
             self.counter_label.setText(f"{self.current_index + 1}/{len(self.image_files)}")
@@ -635,11 +847,10 @@ align-self: center;
             logger.error(f"Error displaying image: {e}")
             self.status_bar.showMessage(f"Error loading image: {str(e)}")
             
-            # Try to get direct URL as fallback
+            # Try to create a direct Commons URL
             try:
                 image_name = self.image_files[self.current_index]
-                # Simple Wikimedia Commons URL pattern
-                encoded_name = image_name.replace(' ', '_')
+                encoded_name = urllib.parse.quote(image_name.replace(' ', '_'))
                 direct_url = f"https://commons.wikimedia.org/wiki/File:{encoded_name}"
                 
                 error_html = f"""
@@ -691,6 +902,7 @@ align-self: center;
         self.cancel_loading()
         super().closeEvent(event)
 
+
 def main():
     """Main entry point"""
     app = QApplication(sys.argv)
@@ -705,24 +917,30 @@ def main():
     # Run application
     sys.exit(app.exec())
 
+
 if __name__ == "__main__":
-    # Check if pywikibot is configured
+    # Check if we can connect to Wikimedia Commons
     try:
-        # Test pywikibot initialization
-        site = pywikibot.Site('commons', 'commons')
-        print("Wikimedia Commons connection test successful")
+        print("Testing Wikimedia Commons connection...")
+        test_response = requests.get(
+            "https://commons.wikimedia.org/w/api.php",
+            params={"action": "query", "meta": "siteinfo", "format": "json"},
+            headers=headers,
+            timeout=10
+        )
         
-        main()
+        if test_response.status_code == 200:
+            print("Wikimedia Commons connection test successful")
+            main()
+        else:
+            print(f"Connection test failed with status code: {test_response.status_code}")
+            print("Please check your internet connection and try again.")
+            sys.exit(1)
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to connect to Wikimedia Commons: {e}")
+        print("Please check your internet connection and try again.")
+        sys.exit(1)
     except Exception as e:
-        print(f"Failed to initialize application: {e}")
-        print("\nPlease ensure you have:")
-        print("1. Pywikibot installed: pip install pywikibot")
-        print("2. Either:")
-        print("   - A user-config.py file in the working directory")
-        print("   - Or run 'python -m pywikibot generate_user_files' to create one")
-        print("\nFor anonymous read access to Wikimedia Commons:")
-        print("Create a user-config.py file with:")
-        print("family = 'commons'")
-        print("mylang = 'commons'")
-        print("usernames['commons']['commons'] = None")
+        print(f"Unexpected error: {e}")
         sys.exit(1)

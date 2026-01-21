@@ -14,6 +14,7 @@ output_dir = "dist"
 os.makedirs(output_dir, exist_ok=True)
 
 # Run pyinstaller with the necessary options
+#           '--add-data', "user-config.py;.",
 subprocess.run(
     [
         sys.executable,
@@ -23,6 +24,7 @@ subprocess.run(
         "Full Screen Viewer for Wikimedia Commons",
         "--onefile",
         "--noconsole",
+
         "--distpath",
         output_dir,
         script_path,
