@@ -181,14 +181,18 @@ class WikimediaImageViewer(QMainWindow):
     
     def get_structured_data(self, image_name: str):
         """Get structured data for an image (licenses, authors, etc.)"""
+        
+        # get pageid
+        #https://commons.wikimedia.org/w/api.php?action=query&titles=File:Shonan-Enoshima%20Station%20May%2021%202021%20various%2023%2036%2049%20843000.jpeg
+        
+        
         # First get the file page content to find the structured data ID
         api_url = "https://commons.wikimedia.org/w/api.php"
         
         params = {
             "action": "query",
             "titles": f"File:{image_name}",
-            "prop": "info",
-            "inprop": "url",
+            "prop": "imageinfo",
             "format": "json"
         }
         
@@ -203,13 +207,14 @@ class WikimediaImageViewer(QMainWindow):
             page_id = list(pages.keys())[0]
             if page_id == "-1":
                 return {}
+            page_id = 'M'+str(page_id)
             
             # Now try to get structured data via the Entity API
-            entity_url = "https://www.wikidata.org/w/api.php"
+            entity_url = "https://commons.wikimedia.org/w/api.php"
             entity_params = {
                 "action": "wbgetentities",
                 "sites": "commonswiki",
-                "titles": f"File:{image_name}",
+                "ids": page_id,
                 "props": "claims",
                 "format": "json"
             }
@@ -226,7 +231,7 @@ class WikimediaImageViewer(QMainWindow):
                 return {}
             
             entity = entities[entity_id]
-            claims = entity.get("claims", {})
+            claims = entity.get("statements", {})
             
             # Extract license and author information
             license_name = "Unknown license"
@@ -255,7 +260,7 @@ class WikimediaImageViewer(QMainWindow):
             # Get author (P170)
             if "P170" in claims:
                 for claim in claims["P170"]:
-                    if "mainsnak" in claim and "datavalue" in claim["mainsnak"]:
+                    if "mainsnak" in claim :
                         # Check if there are qualifiers for author name
                         if "qualifiers" in claim and "P2093" in claim["qualifiers"]:
                             author_qualifiers = claim["qualifiers"]["P2093"]
@@ -813,7 +818,7 @@ align-self: center;
        <a rel="cc:attributionURL" property="dc:title">Photo</a> by
        <a rel="dc:creator" 
        property="cc:attributionName">{author_name}</a>  
-       <a rel="license">{license_name}</a>. 
+       licensed under <a rel="license">{license_name}</a>. 
 </div>
 
 </div> <!-- end main itemscope-->
