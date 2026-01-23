@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QStatusBar, QMessageBox, QProgressDialog)
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtGui import QKeyEvent,QIntValidator
 import requests
 import logging
 import urllib.parse
@@ -402,14 +402,29 @@ class WikimediaImageViewer(QMainWindow):
         self.prev_button.setEnabled(False)
         controls_layout.addWidget(self.prev_button)
         
-        self.next_button = QPushButton("Next →")
-        self.next_button.clicked.connect(self.show_next_image)
-        self.next_button.setEnabled(False)
-        controls_layout.addWidget(self.next_button)
+
         
         # Image counter label
         self.counter_label = QLabel("0/0")
         controls_layout.addWidget(self.counter_label)
+        
+        self.next_button = QPushButton("Next →")
+        self.next_button.clicked.connect(self.show_next_image)
+        self.next_button.setEnabled(False)
+        controls_layout.addWidget(self.next_button)
+                
+        self.gotonumber = QLineEdit()
+        self.gotonumber.setPlaceholderText(f"Go to image number")
+        self.gotonumber.returnPressed.connect(self.show_image_bynumber)
+        validator = QIntValidator(0, 9999)
+        self.gotonumber.setValidator(validator)
+        self.gotonumber.setFixedWidth(150)
+        controls_layout.addWidget(self.gotonumber )
+        # Go to number button
+        self.gotonumber_button = QPushButton("Go to number")
+        self.gotonumber_button.clicked.connect(self.show_image_bynumber)
+
+        controls_layout.addWidget(self.gotonumber_button)
         
         controls_layout.addStretch()
         main_layout.addLayout(controls_layout)
@@ -947,7 +962,16 @@ align-self: center;
         
         self.current_index = (self.current_index + 1) % len(self.image_files)
         self.display_current_image()
-    
+        
+    def show_image_bynumber(self):
+
+        if len(self.image_files) <= 1:
+            return
+        
+        
+        self.current_index = int(self.gotonumber.text().strip())
+        self.display_current_image()    
+        
     def refresh_current_image(self):
         """Refresh the current image"""
         if self.image_files:
