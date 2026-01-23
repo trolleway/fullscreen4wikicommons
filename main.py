@@ -25,6 +25,51 @@ class ImageLoaderWorker(QObject):
     progress = pyqtSignal(str)
     headers = {'User-Agent': 'fullscreen4wikicommons/1.0 (https://github.com/trolleway/fullscreen4wikicommons; trolleway@yandex.ru)'}
     
+            
+    def get_commons_files(self,category_name, depth=1):
+        """
+        Recursively returns file names from a Wikimedia Commons category.
+        :param category_name: Name of the category (e.g., 'Category:Nature')
+        :param depth: How many subcategory levels to descend (0 for just the current category)
+        """
+        if not category_name.startswith("Category:"):
+            category_name = f"Category:{category_name}"
+
+        url = "https://commons.wikimedia.org/w/api.php"
+        files = []
+        
+        params = {
+            "action": "query",
+            "list": "categorymembers",
+            "cmtitle": category_name,
+            "cmtype": "file|subcat",
+            "cmlimit": "max",
+            "format": "json"
+        }
+
+        while True:
+            response = requests.get(url, params=params, headers=self.headers).json()
+            
+            for member in response.get("query", {}).get("categorymembers", []):
+                if member["ns"] == 6:  # Namespace 6 is for Files
+                    if member["title"].lower().endswith(('.jpg', '.jpeg', '.png', '.gif', 
+                                '.svg', '.webp', '.tiff', '.tif', 
+                                '.bmp', '.ico')):
+                        files.append(member["title"])
+                elif member["ns"] == 14 and depth > 0:  # Namespace 14 is for Subcategories
+                    # Recursive call for subdirectories
+                    files.extend(self.get_commons_files(member["title"], depth - 1))
+
+            # Handle pagination for categories with >500 members
+            if "continue" in response:
+                params.update(response["continue"])
+            else:
+                break
+
+        return list(set(files))  # Use set to avoid duplicates from cyclic categories
+
+
+
     def __init__(self, category_name: str):
         super().__init__()
         self.category_name = category_name
@@ -44,6 +89,8 @@ class ImageLoaderWorker(QObject):
                 
             self.progress.emit(f"Loading category: {self.category_name}...")
             
+            image_files = self.get_commons_files(self.category_name,1)
+            '''
             # Check if category exists using MediaWiki API
             api_url = "https://commons.wikimedia.org/w/api.php"
             
@@ -112,7 +159,7 @@ class ImageLoaderWorker(QObject):
             if not image_files:
                 self.error.emit(f"No images found in category: {self.category_name}")
                 return
-            
+            '''
             # Remove duplicates and sort
             image_files = sorted(list(set(image_files)))
             
@@ -140,6 +187,9 @@ class WikimediaImageViewer(QMainWindow):
         
     def get_image_info(self,image_name: str,width:int):
         """Get information about an image file"""
+        
+        if image_name.startswith('File:'):
+            image_name = image_name[5:]
         api_url = "https://commons.wikimedia.org/w/api.php"
         
         params = {
@@ -329,9 +379,10 @@ class WikimediaImageViewer(QMainWindow):
         self.category_label = QLabel("Category:")
         controls_layout.addWidget(self.category_label)
         
-        sample_categories = ['DeLorean DMC-12 in the UMMC Museum',
-                             'Photographs by Artem Svetlov/2023-01 KodakVision3 250D',
+        sample_categories = [
                              'Kamakurakōkōmae Crossing No.1',
+                             'Photographs by Artem Svetlov/2022-08 Silberra50',
+                             'Stations of Kominato Railway'
                              ]
         randomcategory = random.choice(sample_categories)
         
@@ -906,6 +957,7 @@ align-self: center;
         """Clean up on window close"""
         self.cancel_loading()
         super().closeEvent(event)
+
 
 
 def main():
