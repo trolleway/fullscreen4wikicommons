@@ -366,7 +366,9 @@ class WikimediaImageViewer(QMainWindow):
         self.loading_dialog = None
         
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.show_next_image)
+        self.timer.timeout.connect(self.on_slideshow_timer)
+        self.slideshow_frame_duration = 10000
+        self.slideshow_mode=False
         
         self.init_ui()
         
@@ -459,6 +461,7 @@ class WikimediaImageViewer(QMainWindow):
                 </body>
             </html>
         """)
+        self.web_view.loadFinished.connect(self.on_load_finished)
         main_layout.addWidget(self.web_view, 1)
         
         # Status bar
@@ -466,7 +469,12 @@ class WikimediaImageViewer(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
         
-        
+    def on_load_finished(self,success):
+        if success:
+            if self.slideshow_mode == True:
+                self.timer.start(self.slideshow_frame_duration)
+            
+                
     def keyPressEvent(self, event: QKeyEvent):
         """Handle keyboard navigation"""
         if event.key() == Qt.Key.Key_Left:
@@ -980,16 +988,24 @@ align-self: center;
     
     def on_slideshow_start(self):
 
-        self.timer.start(10000)
+        self.slideshow_mode = True
+        
+        self.timer.start(self.slideshow_frame_duration)
         self.slideshow_start_btn.setEnabled(False)
         self.slideshow_stop_btn.setEnabled(True)
     def on_slideshow_stop(self):
         if self.timer is not None:
-            self.timer.stop      
+            self.timer.stop()     
+        self.slideshow_mode=False 
         
         self.slideshow_start_btn.setEnabled(True)
         self.slideshow_stop_btn.setEnabled(False)
-            
+    def on_slideshow_timer(self):
+        self.show_next_image()
+        self.timer.stop()
+
+
+        
     def show_image_bynumber(self):
 
         if len(self.image_files) <= 1:
