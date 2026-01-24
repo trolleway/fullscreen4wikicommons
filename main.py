@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLineEdit, QPushButton, QLabel, 
                              QStatusBar, QMessageBox, QProgressDialog)
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QObject, QTimer
 from PyQt6.QtGui import QKeyEvent,QIntValidator
 import requests
 import logging
@@ -184,7 +184,10 @@ class ImageLoaderWorker(QObject):
 
 class WikimediaImageViewer(QMainWindow):
     headers = {'User-Agent': 'fullscreen4wikicommons/1.0 (https://github.com/trolleway/fullscreen4wikicommons; trolleway@yandex.ru)'} 
-        
+
+    
+
+    
     def get_image_info(self,image_name: str,width:int):
         """Get information about an image file"""
         
@@ -362,6 +365,9 @@ class WikimediaImageViewer(QMainWindow):
         # Loading dialog
         self.loading_dialog = None
         
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.show_next_image)
+        
         self.init_ui()
         
     def init_ui(self):
@@ -420,12 +426,21 @@ class WikimediaImageViewer(QMainWindow):
         self.gotonumber.setValidator(validator)
         self.gotonumber.setFixedWidth(150)
         controls_layout.addWidget(self.gotonumber )
+        
         # Go to number button
         self.gotonumber_button = QPushButton("Go to number")
         self.gotonumber_button.clicked.connect(self.show_image_bynumber)
-
         controls_layout.addWidget(self.gotonumber_button)
         
+        self.slideshow_start_btn = QPushButton("Start slideshow")
+        self.slideshow_start_btn.clicked.connect(self.on_slideshow_start)
+        controls_layout.addWidget(self.slideshow_start_btn)
+        
+        self.slideshow_stop_btn = QPushButton("Stop slideshow")
+        self.slideshow_stop_btn.clicked.connect(self.on_slideshow_stop)
+        self.slideshow_stop_btn.setEnabled(False)
+        controls_layout.addWidget(self.slideshow_stop_btn)
+                
         controls_layout.addStretch()
         main_layout.addLayout(controls_layout)
         
@@ -962,7 +977,19 @@ align-self: center;
         
         self.current_index = (self.current_index + 1) % len(self.image_files)
         self.display_current_image()
+    
+    def on_slideshow_start(self):
+
+        self.timer.start(10000)
+        self.slideshow_start_btn.setEnabled(False)
+        self.slideshow_stop_btn.setEnabled(True)
+    def on_slideshow_stop(self):
+        if self.timer is not None:
+            self.timer.stop      
         
+        self.slideshow_start_btn.setEnabled(True)
+        self.slideshow_stop_btn.setEnabled(False)
+            
     def show_image_bynumber(self):
 
         if len(self.image_files) <= 1:
